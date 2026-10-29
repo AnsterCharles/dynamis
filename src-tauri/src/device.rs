@@ -9,9 +9,10 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -23,6 +24,21 @@ const FIRMWARE_R4_BIN: &[u8] = include_bytes!("../firmware/dynamis_fsr_r4.bin");
 const FW_PREFIX: &str = "DYNAMIS FSR ";
 const FW_VERSION: u32 = 2; // keep in step with FW_ID in firmware/dynamis_fsr/dynamis_fsr.ino
 const BAUD: u32 = 115_200;
+
+/// dynamis.log in the app's log folder: connection events, for working out why a board dropped.
+static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_log_path(path: PathBuf) {
+    let _ = LOG_PATH.set(path);
+}
+
+fn log(msg: &str) {
+    let Some(path) = LOG_PATH.get() else { return };
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{secs:.3} {msg}");
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -53,8 +69,13 @@ pub enum Status {
     Connecting { port: String, board: String },
     Installing { port: String, board: String, step: String, progress: f32 },
     Connected { port: String, board: String },
+    /// The board was streaming and went quiet or dropped off USB; waiting for it to come back.
+    Reconnecting { port: String, board: String },
     Error { message: String },
 }
+
+/// How long to wait for a board that dropped out mid-stream before asking for a replug.
+const RECONNECT_FOR: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
 struct Reading {
@@ -106,6 +127,9 @@ impl Device {
     }
 
     fn set(&self, app: &AppHandle, status: Status) {
+        if !matches!(status, Status::Installing { .. }) {
+            log(&format!("status {}", serde_json::to_string(&status).unwrap_or_default()));
+        }
         *self.status.lock().unwrap() = status.clone();
         let _ = app.emit("device-status", status);
     }
@@ -167,8 +191,25 @@ impl Device {
             };
 
             self.set(&app, Status::Connected { port: board.port.clone(), board: board.name.clone() });
-            stream(&app, serial);
-            // The stream ended because the board was unplugged or stalled: look again.
+            // One clock for the whole session, so reading times carry on across reconnects.
+            let clock = Instant::now();
+            let mut serial = serial;
+            loop {
+                stream(&app, serial, clock);
+                // The board was unplugged, or its USB link dropped or stalled. It runs our
+                // firmware, so never reinstall: wait for it to answer again.
+                self.set(&app, Status::Reconnecting { port: board.port.clone(), board: board.name.clone() });
+                match reconnect(&board.port) {
+                    Some(s) => {
+                        serial = s;
+                        self.set(&app, Status::Connected { port: board.port.clone(), board: board.name.clone() });
+                    }
+                    None => break,
+                }
+            }
+            if port_present(&board.port) {
+                self.fail(&app, &board.port, format!("The {} stopped answering. Unplug it and plug it back in.", board.name));
+            }
         }
     }
 
@@ -220,15 +261,32 @@ impl Device {
     /// Waits until the board is unplugged or the user clicks the retry button.
     fn wait_for_unplug_or_retry(&self, port: &str) {
         while !self.retry.load(Ordering::Relaxed) {
-            let present = serialport::available_ports()
-                .map(|ps| ps.iter().any(|p| p.port_name == port))
-                .unwrap_or(false);
-            if !present {
+            if !port_present(port) {
                 return;
             }
             sleep(Duration::from_millis(500));
         }
     }
+}
+
+fn port_present(port: &str) -> bool {
+    serialport::available_ports().map(|ps| ps.iter().any(|p| p.port_name == port)).unwrap_or(false)
+}
+
+/// Waits up to RECONNECT_FOR for the board on `port` to answer with the current firmware again.
+fn reconnect(port: &str) -> Option<Box<dyn serialport::SerialPort>> {
+    let start = Instant::now();
+    while start.elapsed() < RECONNECT_FOR {
+        if port_present(port) {
+            if let Ok(Some(serial)) = identify(port) {
+                log(&format!("reconnect: back after {:.1} s", start.elapsed().as_secs_f64()));
+                return Some(serial);
+            }
+        }
+        sleep(Duration::from_millis(500));
+    }
+    log("reconnect: gave up");
+    None
 }
 
 // ---------- serial ----------
@@ -269,6 +327,7 @@ fn identify(port_name: &str) -> Result<Option<Box<dyn serialport::SerialPort>>, 
 
     let start = Instant::now();
     let mut asked = 0;
+    let mut lines = 0;
     let mut reader = BufReader::new(port.try_clone().map_err(|e| e.to_string())?);
     let mut buf = Vec::new();
     // On an R3, Optiboot waits ~1 s after reset before starting the sketch, which prints its
@@ -283,47 +342,59 @@ fn identify(port_name: &str) -> Result<Option<Box<dyn serialport::SerialPort>>, 
             Ok(_) if buf.ends_with(b"\n") => {
                 let line = String::from_utf8_lossy(&buf).trim().to_string();
                 buf.clear();
+                lines += 1;
                 if let Some(v) = line.strip_prefix(FW_PREFIX) {
+                    log(&format!("identify: '{line}' after {} ms", start.elapsed().as_millis()));
                     drop(reader);
                     return Ok((v.trim().parse::<u32>() == Ok(FW_VERSION)).then_some(port));
                 }
             }
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::TimedOut => {}
-            Err(e) => return Err(format!("Lost the connection to the board: {e}")),
+            Err(e) => {
+                log(&format!("identify: read error: {e} ({:?})", e.kind()));
+                return Err(format!("Lost the connection to the board: {e}"));
+            }
         }
         if buf.len() > 256 {
             buf.clear();
         }
     }
+    log(&format!("identify: no ID line in 3.5 s ({lines} other lines)"));
     Ok(None)
 }
 
 /// Streams readings until the board is unplugged or stalls. Takes the port by value so it's
 /// closed on return.
-fn stream(app: &AppHandle, port: Box<dyn serialport::SerialPort>) {
+fn stream(app: &AppHandle, port: Box<dyn serialport::SerialPort>, clock: Instant) {
     let mut reader = BufReader::new(port);
     let start = Instant::now();
     let mut last_data = Instant::now();
     let mut buf = Vec::new();
+    let mut lines = 0u64;
     loop {
         match reader.read_until(b'\n', &mut buf) {
             Ok(_) if buf.ends_with(b"\n") => {
-                if let Some(reading) = std::str::from_utf8(&buf).ok().and_then(|s| parse_reading(s, start.elapsed().as_secs_f64())) {
+                if let Some(reading) = std::str::from_utf8(&buf).ok().and_then(|s| parse_reading(s, clock.elapsed().as_secs_f64())) {
                     last_data = Instant::now();
+                    lines += 1;
                     let _ = app.emit("reading", reading);
                 }
                 buf.clear();
             }
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::TimedOut => {}
-            Err(_) => return,
+            Err(e) => {
+                log(&format!("stream: read error after {lines} readings, {:.1} s: {e} ({:?})", start.elapsed().as_secs_f64(), e.kind()));
+                return;
+            }
         }
         if buf.len() > 256 {
             buf.clear();
         }
         // The firmware sends 50 lines a second; silence means the board is gone or hung.
         if last_data.elapsed() > Duration::from_secs(2) {
+            log(&format!("stream: 2 s without a reading after {lines} readings, {:.1} s", start.elapsed().as_secs_f64()));
             return;
         }
     }

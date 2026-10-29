@@ -170,6 +170,12 @@ impl Probe {
         Ok(())
     }
 
+    /// Stops or restarts the board's processor (for testing how the app copes with a board
+    /// that goes silent).
+    pub fn set_halted(&mut self, halted: bool) -> Result<(), String> {
+        self.write32(0xE000_EDF0, if halted { 0xA05F_0003 } else { 0xA05F_0001 }) // DHCSR
+    }
+
     /// Reads `len` bytes (a multiple of 4) starting at `addr` (4-byte aligned).
     /// The CPU keeps running; nothing on the board is changed.
     pub fn read(&mut self, addr: u32, len: usize, mut progress: impl FnMut(f32)) -> Result<Vec<u8>, String> {

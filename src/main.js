@@ -149,16 +149,19 @@ function onDeviceStatus(s) {
   const was = state.device.state;
   state.device = s;
   const connected = s.state === "connected";
+  // A board that drops out mid-stream keeps the meter (and any recording) up while it reconnects.
+  const live = connected || s.state === "reconnecting";
+  const wasLive = was === "connected" || was === "reconnecting";
 
-  if (connected && was !== "connected") {
+  if (connected && !wasLive) {
     state.samples = [];
     state.latest = null;
     state.sensor = null;
   }
-  if (!connected && was === "connected" && state.recording) stopRecording();
+  if (!live && wasLive && state.recording) stopRecording();
 
-  $("setup").classList.toggle("hidden", connected);
-  $("meter").classList.toggle("hidden", !connected);
+  $("setup").classList.toggle("hidden", live);
+  $("meter").classList.toggle("hidden", !live);
   $("setup").classList.toggle("error", s.state === "error");
   $("install-bar").classList.toggle("hidden", s.state !== "installing");
   $("setup-actions").classList.toggle("hidden", s.state !== "error");
@@ -192,6 +195,10 @@ function onDeviceStatus(s) {
       status.className = "status connected";
       text.textContent = `Connected · ${s.port}`;
       $("board-value").textContent = s.board;
+      break;
+    case "reconnecting":
+      status.className = "status waiting";
+      text.textContent = "Reconnecting…";
       break;
     case "error":
       status.className = "status error";

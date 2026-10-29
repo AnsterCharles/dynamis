@@ -3,6 +3,7 @@
 //!   cargo run --example r4tool -- boot  <COMx>              enter the bootloader, then reset back
 //!   cargo run --example r4tool -- write <COMx> <in.bin>     write through the bootloader, then reset
 //!   cargo run --example r4tool -- verify <in.bin>           compare the board's flash with a file
+//!   cargo run --example r4tool -- freeze <seconds>          stop the processor, then let it run on
 
 use std::time::Instant;
 
@@ -44,7 +45,15 @@ fn main() -> Result<(), String> {
                 Some(i) => return Err(format!("MISMATCH at offset 0x{i:X}: file {:02X}, board {:02X}", image[i], flash[i])),
             }
         }
-        _ => return Err("usage: read <out.bin> | boot <COMx> | write <COMx> <in.bin> | verify <in.bin>".into()),
+        ["freeze", secs] => {
+            let secs: f32 = secs.parse().map_err(|_| "seconds must be a number")?;
+            let mut probe = Probe::open(VID, PID)?;
+            probe.set_halted(true)?;
+            std::thread::sleep(std::time::Duration::from_secs_f32(secs));
+            probe.set_halted(false)?;
+            println!("froze the board for {secs} s");
+        }
+        _ => return Err("usage: read <out.bin> | boot <COMx> | write <COMx> <in.bin> | verify <in.bin> | freeze <seconds>".into()),
     }
     Ok(())
 }

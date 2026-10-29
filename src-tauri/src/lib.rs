@@ -59,6 +59,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(device.clone())
         .setup(move |app| {
+            if let Ok(dir) = app.path().app_log_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                device::set_log_path(dir.join("dynamis.log"));
+            }
             device.start(app.handle().clone());
             Ok(())
         })
