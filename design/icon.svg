@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Dynamis: a spring pressing on the sensor. House style: near-black tile, white glyph, grey #8b9099 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="#0a0a0c"/>
+  <rect x="352" y="214" width="320" height="64" rx="32" fill="#ffffff"/>
+  <polyline points="512,278 512,322 672,382 352,462 672,542 352,622 512,682 512,716"
+            fill="none" stroke="#ffffff" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="262" y="752" width="500" height="72" rx="36" fill="#8b9099"/>
+</svg>

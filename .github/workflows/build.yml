@@ -1,0 +1,58 @@
+# Builds the Mac app on GitHub's machines (Tauri can't build a Mac app from Windows). Run it from
+# the Actions tab ("Run workflow") or by pushing a version tag (v0.5.0). Each job uploads its .dmg
+# as an artifact.
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  macos:
+    # Tauri can't cross-compile, so each Mac architecture builds on its own runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel # Intel Macs
+            name: intel
+          - runner: macos-14 # Apple Silicon (M1 and later)
+            name: apple-silicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install the app's packages
+        run: npm ci
+
+      - name: Test
+        run: cargo test
+        working-directory: src-tauri
+
+      - name: Build Dynamis.app and the .dmg
+        run: npx tauri build --bundles app,dmg
+
+      # Launch the app the way Finder does and check it's still running a few seconds later,
+      # so an app that crashes on start-up fails the build instead of reaching a Mac.
+      - name: Smoke-test the app
+        shell: bash {0}
+        run: |
+          open src-tauri/target/release/bundle/macos/Dynamis.app
+          sleep 8
+          if pgrep -f Dynamis.app/Contents/MacOS >/dev/null; then echo "app running"; pkill -f Dynamis.app/Contents/MacOS; exit 0; fi
+          echo "app not running"; exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dynamis-macos-${{ matrix.name }}
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error

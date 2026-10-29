@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dynamis</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <header class="toolbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 1024 1024" aria-hidden="true">
+          <rect width="1024" height="1024" rx="224" fill="#0a0a0c" />
+          <rect x="352" y="214" width="320" height="64" rx="32" fill="#fff" />
+          <polyline points="512,278 512,322 672,382 352,462 672,542 352,622 512,682 512,716" fill="none" stroke="#fff" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" />
+          <rect x="262" y="752" width="500" height="72" rx="36" fill="#8b9099" />
+        </svg>
+        Dynamis
+      </div>
+      <div class="connection">
+        <span id="status" class="status"><span class="dot"></span><span id="status-text">Starting…</span></span>
+      </div>
+    </header>
+
+    <!-- Shown until a board is connected -->
+    <section id="setup" class="setup">
+      <div class="setup-card">
+        <h1 id="setup-title">Plug in the Arduino</h1>
+        <p id="setup-text" class="setup-text">Dynamis finds the Uno by itself. Nothing to install or select.</p>
+        <div id="install-bar" class="progress hidden"><div id="install-fill"></div></div>
+        <div id="setup-actions" class="actions setup-actions hidden">
+          <button id="setup-action-btn" class="primary"></button>
+        </div>
+
+        <div id="wiring" class="wiring">
+          <svg viewBox="0 0 420 170" class="wiring-svg" aria-label="Sensor wiring: one leg to A0, the other to GND">
+            <rect x="10" y="20" width="130" height="130" rx="10" class="w-board" />
+            <text x="75" y="44" class="w-label">Arduino Uno</text>
+            <rect x="30" y="64" width="90" height="28" rx="5" class="w-pin" />
+            <text x="75" y="83" class="w-pin-text">A0</text>
+            <rect x="30" y="104" width="90" height="28" rx="5" class="w-pin" />
+            <text x="75" y="123" class="w-pin-text">GND</text>
+            <path d="M120 78 C 200 78, 220 84, 280 84" class="w-wire" />
+            <path d="M120 118 C 200 118, 220 96, 280 96" class="w-wire" />
+            <rect x="280" y="80" width="54" height="20" rx="3" class="w-tail" />
+            <circle cx="366" cy="90" r="40" class="w-sensor" />
+            <circle cx="366" cy="90" r="27" class="w-sensor-inner" />
+          </svg>
+          <ol class="steps">
+            <li>Connect a sensor:
+              <ul>
+                <li><b>FX29 load cell:</b> to the R4 WiFi's <b>Qwiic</b> port. Sensor wire → Qwiic wire: red → red, black → black, white → blue, yellow → yellow.</li>
+                <li><b>Film sensor:</b> its two legs to <b>A0</b> and <b>GND</b> (either way round, no resistor).</li>
+              </ul>
+            </li>
+            <li>Plug the Uno (R3 or R4 WiFi) into this computer with its USB cable.</li>
+            <li>Dynamis installs its firmware on the Uno (about 10&nbsp;s). <b>This replaces the program on the board.</b> Afterwards, upload your own program again from the Arduino IDE.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <main id="meter" class="layout hidden">
+      <section class="card readout-card">
+        <div class="readout-head">
+          <span class="label">Force</span>
+          <div class="units" id="unit-group">
+            <button data-unit="g">g</button>
+            <button data-unit="kg">kg</button>
+            <button data-unit="N">N</button>
+            <button data-unit="lbf">lbf</button>
+          </div>
+        </div>
+        <div class="readout">
+          <span id="force-approx" class="approx hidden">≈</span>
+          <span id="force-value" class="value">—</span>
+          <span id="force-unit" class="unit"></span>
+        </div>
+        <div id="calib-warning" class="warning">
+          Estimated from a typical sensor and could be off by half. Calibrate below for real numbers.
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="label">Peak</span>
+            <span><span id="peak-value" class="stat-value">—</span> <span id="peak-unit" class="muted"></span></span>
+          </div>
+          <div class="stat">
+            <span class="label">Average (2 s)</span>
+            <span><span id="avg-value" class="stat-value">—</span> <span id="avg-unit" class="muted"></span></span>
+          </div>
+          <div class="stat">
+            <span id="raw-label" class="label">Sensor reading</span>
+            <span id="raw-value" class="stat-value">—</span>
+          </div>
+          <div class="stat">
+            <span class="label">Board</span>
+            <span id="board-value" class="stat-small">—</span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="peak-reset-btn">Reset peak</button>
+          <button id="zero-btn" title="Subtract the current reading (e.g. the disc's weight)">Zero</button>
+          <button id="unzero-btn" class="ghost">Clear zero</button>
+        </div>
+      </section>
+
+      <section class="card chart-card">
+        <div class="card-head">
+          <span class="label">Last <span id="window-secs">15</span> s</span>
+          <button id="pause-btn" class="ghost small">Pause</button>
+        </div>
+        <canvas id="chart"></canvas>
+      </section>
+
+      <section class="card calib-card">
+        <div class="card-head"><span class="label">Calibration</span></div>
+        <div id="calib-fx29" class="hidden">
+          <p class="help">
+            The FX29 is factory-calibrated. Press <b>Zero</b> once with nothing on its button;
+            that's remembered. Press on the center of the button, straight down.
+          </p>
+          <div class="calib-add">
+            <span class="muted">Sensor range</span>
+            <select id="fx29-range">
+              <option value="10">10 lbf</option>
+              <option value="25">25 lbf</option>
+              <option value="50">50 lbf</option>
+              <option value="100">100 lbf</option>
+              <option value="200">200 lbf</option>
+            </select>
+          </div>
+          <p class="help">
+            Optional check: put a known weight on the button, wait ~2&nbsp;s, type it and click
+            <b>Check</b>. If the reading is off, Dynamis corrects it.
+          </p>
+          <div class="calib-add">
+            <input id="fx29-weight" type="number" min="1" step="any" placeholder="Known weight" />
+            <span class="muted">g</span>
+            <button id="fx29-check-btn" class="primary">Check</button>
+          </div>
+          <p class="help">Correction: <span id="fx29-span"></span>
+            <button id="fx29-span-reset" class="ghost small">Reset</button></p>
+        </div>
+        <div id="calib-fsr">
+        <p class="help">
+          Put a small rigid disc (a coin) on the sensor's round area and a known weight on the
+          disc. Wait ~2&nbsp;s, type the weight and capture. Use 3–5 weights across your range
+          (e.g. 100&nbsp;g, 500&nbsp;g, 1&nbsp;kg, 2&nbsp;kg). Use the same disc when measuring.
+        </p>
+        <div class="calib-add">
+          <input id="calib-weight" type="number" min="1" step="any" placeholder="Known weight" />
+          <span class="muted">g</span>
+          <button id="calib-add-btn" class="primary">Capture point</button>
+        </div>
+        <table class="calib-table">
+          <thead><tr><th>Weight (g)</th><th>Reading</th><th></th></tr></thead>
+          <tbody id="calib-body"></tbody>
+        </table>
+        <div class="actions">
+          <button id="calib-clear-btn" class="ghost">Clear all points</button>
+        </div>
+        </div>
+      </section>
+
+      <section class="card record-card">
+        <div class="card-head"><span class="label">Recording</span></div>
+        <p class="help">Records every reading (50 per second) to a CSV in Documents/Dynamis.</p>
+        <div class="actions">
+          <button id="record-btn" class="primary">Start recording</button>
+          <span id="record-info" class="muted"></span>
+        </div>
+        <div id="saved-row" class="saved hidden">
+          Saved: <span id="saved-path"></span>
+          <button id="reveal-btn" class="ghost small">Show in folder</button>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>
