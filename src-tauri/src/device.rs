@@ -22,7 +22,7 @@ use crate::{dap, samba, stk500};
 const FIRMWARE_R3_HEX: &str = include_str!("../firmware/dynamis_fsr.hex");
 const FIRMWARE_R4_BIN: &[u8] = include_bytes!("../firmware/dynamis_fsr_r4.bin");
 const FW_PREFIX: &str = "DYNAMIS FSR ";
-const FW_VERSION: u32 = 2; // keep in step with FW_ID in firmware/dynamis_fsr/dynamis_fsr.ino
+const FW_VERSION: u32 = 4; // keep in step with FW_ID in firmware/dynamis_fsr/dynamis_fsr.ino
 const BAUD: u32 = 115_200;
 
 /// dynamis.log in the app's log folder: connection events, for working out why a board dropped.
@@ -80,21 +80,17 @@ const RECONNECT_FOR: Duration = Duration::from_secs(20);
 #[derive(Clone, Serialize, Debug, PartialEq)]
 struct Reading {
     t: f64,
-    /// "fx29": raw FX29 counts (1000 = no force, 15000 = full scale).
-    /// "fsr": film sensor reading, 0 (no force) .. 1023.
-    sensor: &'static str,
-    value: f64,
+    /// Raw FX29 counts (1000 = no force, 15000 = full scale), or None while no FX29 is found.
+    value: Option<f64>,
 }
 
-/// Parses one line from the firmware: "F <counts>" from an FX29, or a bare FSR reading.
+/// Parses one line from the firmware: "F <counts>", or "F -" while the FX29 is missing.
 fn parse_reading(line: &str, t: f64) -> Option<Reading> {
-    let line = line.trim();
-    if let Some(counts) = line.strip_prefix("F ") {
-        let value = counts.trim().parse::<f64>().ok()?;
-        return Some(Reading { t, sensor: "fx29", value });
+    let counts = line.trim().strip_prefix("F ")?.trim();
+    if counts == "-" {
+        return Some(Reading { t, value: None });
     }
-    let value = line.parse::<f64>().ok()?;
-    Some(Reading { t, sensor: "fsr", value })
+    Some(Reading { t, value: Some(counts.parse::<f64>().ok()?) })
 }
 
 pub struct Device {
@@ -392,7 +388,8 @@ fn stream(app: &AppHandle, port: Box<dyn serialport::SerialPort>, clock: Instant
         if buf.len() > 256 {
             buf.clear();
         }
-        // The firmware sends 50 lines a second; silence means the board is gone or hung.
+        // The firmware sends 50 lines a second (2 while the sensor is missing); silence means
+        // the board is gone or hung.
         if last_data.elapsed() > Duration::from_secs(2) {
             log(&format!("stream: 2 s without a reading after {lines} readings, {:.1} s", start.elapsed().as_secs_f64()));
             return;
@@ -405,10 +402,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_both_sensor_formats() {
-        assert_eq!(parse_reading("F 1234\r\n", 1.0), Some(Reading { t: 1.0, sensor: "fx29", value: 1234.0 }));
-        assert_eq!(parse_reading("69.7\r\n", 2.0), Some(Reading { t: 2.0, sensor: "fsr", value: 69.7 }));
-        assert_eq!(parse_reading("DYNAMIS FSR 2", 0.0), None);
+    fn parses_readings() {
+        assert_eq!(parse_reading("F 1234\r\n", 1.0), Some(Reading { t: 1.0, value: Some(1234.0) }));
+        assert_eq!(parse_reading("F -\r\n", 2.0), Some(Reading { t: 2.0, value: None }));
+        assert_eq!(parse_reading("DYNAMIS FSR 4", 0.0), None);
+        assert_eq!(parse_reading("69.7", 0.0), None);
         assert_eq!(parse_reading("F x", 0.0), None);
     }
 }

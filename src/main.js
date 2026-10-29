@@ -1,30 +1,14 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// The firmware sends 0 (no force) .. 1023. The sensor sits between A0 and GND with A0's
-// internal pull-up (20-50 kΩ, nominal value below) on top, so
-//   value = 1023 * R_pullup / (R_pullup + R_sensor)
-const PULLUP_OHMS = 35000;
-const FULL_SCALE = 1023;
-
-// Typical thin-film "5 kg" sensor (grams -> ohms), used until the user calibrates.
-const TYPICAL_SENSOR = [
-  [50, 60000],
-  [100, 30000],
-  [250, 12000],
-  [500, 6500],
-  [1000, 3500],
-  [2000, 2000],
-  [5000, 900],
-];
-
 // TE FX29 I2C load cell (datasheet): 1000 counts = no force, 15000 = full scale.
 const FX29_ZERO = 1000;
 const FX29_SPAN = 14000;
+const FX29_FULL = FX29_ZERO + FX29_SPAN;
 const GRAMS_PER_LBF = 453.59237;
 
 const WINDOW_S = 15;   // seconds of history in the chart
-const CAPTURE_S = 1;   // seconds averaged when capturing a calibration point
+const CAPTURE_S = 1;   // seconds averaged when checking against a known weight
 const AVERAGE_S = 2;   // seconds in the steady "average" readout
 
 const UNITS = {
@@ -55,7 +39,7 @@ function save(key, value) {
 
 const state = {
   device: { state: "searching" },
-  sensor: null,         // "fx29" or "fsr", from the readings
+  missing: false,       // the board is connected but finds no FX29
   fx29: {
     rangeLbf: load("dynamis.fx29.range", 10),
     zero: load("dynamis.fx29.zero", FX29_ZERO), // counts at no force
@@ -64,9 +48,7 @@ const state = {
   samples: [],          // { t, value } within the chart window
   latest: null,
   peak: null,
-  zeroG: 0,
   unit: load("dynamis.unit", "g"),
-  calib: load("dynamis.calib", []), // [{ g, value }]
   paused: false,
   recording: null,      // { startT, rows: [[t, value]], startedAt }
   savedPath: null,
@@ -75,50 +57,8 @@ const state = {
 if (!UNITS[state.unit]) state.unit = "g";
 
 // ---------- sensor math ----------
-function conductance(value) {
-  // FSR force is close to linear in conductance (1/R), so interpolate in that space.
-  if (value <= 0) return 0;
-  const v = Math.min(value, FULL_SCALE - 0.5);
-  return (1e6 * v) / (PULLUP_OHMS * (FULL_SCALE - v)); // µS
-}
-
-function isFx29() {
-  return state.sensor === "fx29";
-}
-
-// The FX29 is factory-calibrated; the film sensor needs the user's calibration points.
-function isCalibrated() {
-  return isFx29() || state.calib.length > 0;
-}
-
-function fx29Grams(counts, span = state.fx29.span) {
+function countsToGrams(counts, span = state.fx29.span) {
   return ((counts - state.fx29.zero) / FX29_SPAN) * state.fx29.rangeLbf * GRAMS_PER_LBF * span;
-}
-
-function curvePoints() {
-  const pts = isCalibrated()
-    ? state.calib.map((p) => ({ c: conductance(p.value), g: p.g }))
-    : TYPICAL_SENSOR.map(([g, ohms]) => ({ c: 1e6 / ohms, g }));
-  return [{ c: 0, g: 0 }, ...pts].sort((a, b) => a.c - b.c);
-}
-
-// FX29: linear from its counts. Film sensor: piecewise-linear through the calibration
-// curve, extrapolating the last segment.
-function valueToGrams(value) {
-  if (isFx29()) return fx29Grams(value);
-  const pts = curvePoints();
-  const c = conductance(value);
-  let i = 1;
-  while (i < pts.length - 1 && c > pts[i].c) i++;
-  const p0 = pts[i - 1];
-  const p1 = pts[i];
-  const dc = p1.c - p0.c;
-  if (dc <= 0) return p1.g;
-  return p0.g + ((c - p0.c) * (p1.g - p0.g)) / dc;
-}
-
-function forceGrams(value) {
-  return valueToGrams(value) - state.zeroG;
 }
 
 function formatForce(grams) {
@@ -126,8 +66,8 @@ function formatForce(grams) {
   return (grams * u.perGram).toFixed(u.decimals);
 }
 
-function displayValue(value) {
-  return forceGrams(value) * UNITS[state.unit].perGram;
+function displayValue(counts) {
+  return countsToGrams(counts) * UNITS[state.unit].perGram;
 }
 
 // ---------- UI helpers ----------
@@ -156,7 +96,7 @@ function onDeviceStatus(s) {
   if (connected && !wasLive) {
     state.samples = [];
     state.latest = null;
-    state.sensor = null;
+    state.missing = false;
   }
   if (!live && wasLive && state.recording) stopRecording();
 
@@ -211,15 +151,19 @@ function onDeviceStatus(s) {
   markDirty();
 }
 
-function onReading({ t, sensor, value }) {
-  if (sensor !== state.sensor) {
-    // First reading, or the sensor was swapped: start the display afresh.
-    state.sensor = sensor;
+function onReading({ t, value }) {
+  const missing = value === null;
+  if (missing !== state.missing) {
+    // The sensor was unplugged or plugged in: start the display afresh.
+    state.missing = missing;
     state.samples = [];
     state.latest = null;
     state.peak = null;
-    state.zeroG = 0;
-    renderCalibTable();
+    updateControls();
+  }
+  if (missing) {
+    markDirty();
+    return;
   }
   const s = { t, value };
   const first = !state.latest;
@@ -233,7 +177,7 @@ function onReading({ t, sensor, value }) {
 
   if (state.recording) {
     if (state.recording.startT === null) state.recording.startT = t;
-    state.recording.rows.push([t - state.recording.startT, sensor, value]);
+    state.recording.rows.push([t - state.recording.startT, value]);
   }
   markDirty();
 }
@@ -244,23 +188,24 @@ function recentAverage(seconds) {
   return recent.reduce((sum, s) => sum + s.value, 0) / recent.length;
 }
 
-// ---------- FX29 ----------
-function zeroFx29() {
+// ---------- zero and check ----------
+function zero() {
   const counts = recentAverage(0.5);
   if (counts === null) return;
   state.fx29.zero = counts;
   save("dynamis.fx29.zero", counts);
   toast("Zeroed. This is remembered for next time.");
+  updateControls();
   markDirty();
 }
 
-function checkFx29() {
+function check() {
   const grams = parseFloat($("fx29-weight").value);
   if (!(grams > 0)) {
     toast("Type the known weight in grams first.");
     return;
   }
-  const measured = fx29Grams(recentAverage(CAPTURE_S), 1);
+  const measured = countsToGrams(recentAverage(CAPTURE_S), 1);
   if (!(measured > grams * 0.2)) {
     toast("The sensor reads almost nothing. Is the weight centered on the button, and did you Zero it with nothing on it?", 7000);
     return;
@@ -269,72 +214,14 @@ function checkFx29() {
   save("dynamis.fx29.span", state.fx29.span);
   $("fx29-weight").value = "";
   toast(`Corrected by ×${state.fx29.span.toFixed(3)}.`);
-  renderCalibTable();
+  renderCalibration();
   markDirty();
 }
 
-// ---------- calibration ----------
-function captureCalibration() {
-  const grams = parseFloat($("calib-weight").value);
-  if (!(grams > 0)) {
-    toast("Type the known weight in grams first.");
-    return;
-  }
-  if (!state.latest) {
-    toast("Waiting for readings from the sensor.");
-    return;
-  }
-  const recent = state.samples.filter((s) => s.t >= state.latest.t - CAPTURE_S);
-  const value = recent.reduce((sum, s) => sum + s.value, 0) / recent.length;
-  if (value < 3) {
-    toast("The sensor reads ~0. Make sure the weight rests on the round sensing area.");
-    return;
-  }
-  state.calib = state.calib.filter((p) => p.g !== grams);
-  state.calib.push({ g: grams, value: Math.round(value * 10) / 10 });
-  state.calib.sort((a, b) => a.g - b.g);
-  if (state.calib.some((p, i) => i > 0 && p.value <= state.calib[i - 1].value)) {
-    toast("A heavier weight gave a lower reading. Check the placement and recapture that point.", 7000);
-  }
-  onCalibChanged();
-  $("calib-weight").value = "";
-}
-
-function onCalibChanged() {
-  save("dynamis.calib", state.calib);
-  state.zeroG = 0;
-  renderCalibTable();
-  updateControls();
-  markDirty();
-}
-
-function renderCalibTable() {
-  $("calib-fsr").classList.toggle("hidden", isFx29());
-  $("calib-fx29").classList.toggle("hidden", !isFx29());
+function renderCalibration() {
   $("fx29-range").value = String(state.fx29.rangeLbf);
   $("fx29-span").textContent =
     Math.abs(state.fx29.span - 1) < 1e-6 ? "none (factory calibration)" : `×${state.fx29.span.toFixed(3)}`;
-  const body = $("calib-body");
-  body.innerHTML = "";
-  if (!isCalibrated()) {
-    body.innerHTML = '<tr><td colspan="3" class="empty">No points yet: using the typical-sensor estimate</td></tr>';
-    return;
-  }
-  state.calib.forEach((p, i) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${p.g}</td><td>${p.value.toFixed(1)}</td>`;
-    const td = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.className = "ghost small";
-    btn.textContent = "Remove";
-    btn.onclick = () => {
-      state.calib.splice(i, 1);
-      onCalibChanged();
-    };
-    td.appendChild(btn);
-    tr.appendChild(td);
-    body.appendChild(tr);
-  });
 }
 
 // ---------- recording ----------
@@ -351,12 +238,10 @@ async function stopRecording() {
     toast("Nothing recorded.");
     return;
   }
-  const lines = [`time_s,sensor,raw_reading,force_g,force_N,calibrated`];
-  const cal = isCalibrated() ? "yes" : "no (typical-sensor estimate)";
-  for (const [t, sensor, value] of rec.rows) {
-    if (sensor !== state.sensor) continue; // sensor swapped mid-recording
-    const g = forceGrams(value);
-    lines.push(`${t.toFixed(3)},${sensor},${value},${g.toFixed(1)},${(g * UNITS.N.perGram).toFixed(3)},${cal}`);
+  const lines = [`time_s,raw_counts,force_g,force_N`];
+  for (const [t, counts] of rec.rows) {
+    const g = countsToGrams(counts);
+    lines.push(`${t.toFixed(3)},${counts},${g.toFixed(1)},${(g * UNITS.N.perGram).toFixed(3)}`);
   }
   const d = rec.startedAt;
   const pad = (n) => String(n).padStart(2, "0");
@@ -375,13 +260,11 @@ async function stopRecording() {
 function updateControls() {
   const connected = state.device.state === "connected";
   $("zero-btn").disabled = !state.latest;
-  $("unzero-btn").disabled = isFx29() ? state.fx29.zero === FX29_ZERO : state.zeroG === 0;
-  $("fx29-check-btn").disabled = !connected;
-  $("calib-add-btn").disabled = !connected;
-  $("calib-clear-btn").disabled = !isCalibrated();
+  $("unzero-btn").disabled = state.fx29.zero === FX29_ZERO;
+  $("fx29-check-btn").disabled = !connected || !state.latest;
 
   const rec = $("record-btn");
-  rec.disabled = !connected && !state.recording;
+  rec.disabled = (!connected || !state.latest) && !state.recording;
   rec.textContent = state.recording ? "Stop & save" : "Start recording";
   rec.className = state.recording ? "danger" : "primary";
   if (!state.recording) $("record-info").textContent = "";
@@ -389,8 +272,6 @@ function updateControls() {
   for (const b of document.querySelectorAll("#unit-group button")) {
     b.classList.toggle("active", b.dataset.unit === state.unit);
   }
-  $("calib-warning").classList.toggle("hidden", isCalibrated());
-  $("force-approx").classList.toggle("hidden", isCalibrated());
 }
 
 function renderReadout() {
@@ -399,15 +280,21 @@ function renderReadout() {
   $("avg-unit").textContent = state.unit;
   const latest = state.latest;
   const avg = recentAverage(AVERAGE_S);
-  $("force-value").textContent = latest ? formatForce(forceGrams(latest.value)) : "—";
-  $("avg-value").textContent = avg === null ? "—" : formatForce(forceGrams(avg));
-  $("raw-label").textContent = isFx29() ? "Raw counts" : "Sensor reading";
+  $("force-value").textContent = latest ? formatForce(countsToGrams(latest.value)) : "—";
+  $("avg-value").textContent = avg === null ? "—" : formatForce(countsToGrams(avg));
   $("raw-value").textContent = latest ? latest.value.toFixed(0) : "—";
-  $("peak-value").textContent = state.peak === null ? "—" : formatForce(forceGrams(state.peak));
+  $("peak-value").textContent = state.peak === null ? "—" : formatForce(countsToGrams(state.peak));
   if (state.device.state === "connected") {
-    const sensor = isFx29() ? `FX29 ${state.fx29.rangeLbf} lbf` : state.sensor === "fsr" ? "film sensor" : "…";
-    $("board-value").textContent = `${state.device.board} · ${sensor}`;
+    $("board-value").textContent = `${state.device.board} · FX29 ${state.fx29.rangeLbf} lbf`;
   }
+
+  const warning = $("sensor-warning");
+  if (state.missing) {
+    warning.textContent = "No FX29 found. Check its four wires to the Qwiic port: red → red, black → black, white → blue, yellow → yellow.";
+  } else if (latest && latest.value > FX29_FULL) {
+    warning.textContent = `Over the sensor's range (${state.fx29.rangeLbf} lbf). Readings above this aren't accurate.`;
+  }
+  warning.classList.toggle("hidden", !(state.missing || (latest && latest.value > FX29_FULL)));
 
   if (state.recording) {
     const rows = state.recording.rows;
@@ -535,20 +422,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.peak = state.latest ? state.latest.value : null;
     markDirty();
   };
-  $("zero-btn").onclick = () => {
-    if (!state.latest) return;
-    if (isFx29()) zeroFx29();
-    else state.zeroG = valueToGrams(state.latest.value);
-    updateControls();
-    markDirty();
-  };
+  $("zero-btn").onclick = zero;
   $("unzero-btn").onclick = () => {
-    if (isFx29()) {
-      state.fx29.zero = FX29_ZERO;
-      save("dynamis.fx29.zero", FX29_ZERO);
-    } else {
-      state.zeroG = 0;
-    }
+    state.fx29.zero = FX29_ZERO;
+    save("dynamis.fx29.zero", FX29_ZERO);
     updateControls();
     markDirty();
   };
@@ -557,31 +434,20 @@ window.addEventListener("DOMContentLoaded", async () => {
     save("dynamis.fx29.range", state.fx29.rangeLbf);
     markDirty();
   };
-  $("fx29-check-btn").onclick = checkFx29;
+  $("fx29-check-btn").onclick = check;
   $("fx29-weight").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") checkFx29();
+    if (e.key === "Enter") check();
   });
   $("fx29-span-reset").onclick = () => {
     state.fx29.span = 1;
     save("dynamis.fx29.span", 1);
-    renderCalibTable();
+    renderCalibration();
     markDirty();
   };
   $("pause-btn").onclick = () => {
     state.paused = !state.paused;
     $("pause-btn").textContent = state.paused ? "Resume" : "Pause";
     markDirty();
-  };
-
-  $("calib-add-btn").onclick = captureCalibration;
-  $("calib-weight").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") captureCalibration();
-  });
-  $("calib-clear-btn").onclick = () => {
-    if (confirm("Remove all calibration points?")) {
-      state.calib = [];
-      onCalibChanged();
-    }
   };
 
   $("record-btn").onclick = () => (state.recording ? stopRecording() : startRecording());
@@ -599,6 +465,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   await listen("device-status", (e) => onDeviceStatus(e.payload));
   onDeviceStatus(await invoke("device_status"));
 
-  renderCalibTable();
+  renderCalibration();
   requestAnimationFrame(frame);
 });

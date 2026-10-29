@@ -145,11 +145,6 @@ button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 .calib-add { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .calib-add input { width: 140px; }
-.calib-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-variant-numeric: tabular-nums; }
-.calib-table th, .calib-table td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--border); }
-.calib-table th { font-size: 12px; color: var(--muted); font-weight: 600; }
-.calib-table td:last-child { text-align: right; }
-.calib-table .empty { color: var(--muted); font-style: italic; }
 
 .saved { margin-top: 10px; font-size: 13px; word-break: break-all; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .hidden { display: none !important; }
@@ -172,7 +167,6 @@ button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .logo { width: 26px; height: 26px; }
 .stat-small { font-size: 14px; padding-top: 4px; }
-.approx { font-size: 40px; color: var(--muted); font-weight: 600; }
 
 .setup { display: flex; justify-content: center; padding: 48px 16px; }
 .setup-card {
@@ -196,14 +190,15 @@ button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .w-label { fill: #fff; font-size: 13px; font-weight: 600; text-anchor: middle; }
 .w-pin { fill: #0a0a0c; }
 .w-pin-text { fill: #fff; font-size: 14px; font-weight: 700; text-anchor: middle; }
-.w-wire { fill: none; stroke: #8b9099; stroke-width: 4; stroke-linecap: round; }
-.w-tail { fill: #c9a96a; }
-.w-sensor { fill: #c9a96a; }
-.w-sensor-inner { fill: #6b5b3e; }
+.w-wire { fill: none; stroke-width: 4; stroke-linecap: round; }
+.w-red { stroke: #d6403a; }
+.w-black { stroke: #2a2c31; }
+.w-blue { stroke: #3a6fd6; }
+.w-yellow { stroke: #e0b52f; }
+.w-sensor { fill: #3a2f2a; }
+.w-sensor-inner { fill: #57473f; }
 .steps { margin: 0; padding-left: 20px; line-height: 1.55; }
 .steps li { margin-bottom: 8px; }
 .setup-actions { margin: 0 0 20px; }
 .stats { grid-template-columns: repeat(4, 1fr); }
 @media (max-width: 520px) { .stats { grid-template-columns: repeat(2, 1fr); } }
-.steps ul { margin: 6px 0 0; padding-left: 18px; }
-.steps ul li { margin-bottom: 4px; }

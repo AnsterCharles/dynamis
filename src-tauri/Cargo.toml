@@ -1,6 +1,6 @@
 [package]
 name = "dynamis"
-version = "0.5.1"
+version = "0.5.2"
 description = "Force meter for a thin-film force sensor on an Arduino Uno"
 authors = ["Anster Charles"]
 edition = "2024"

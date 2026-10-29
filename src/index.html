@@ -35,26 +35,21 @@
         </div>
 
         <div id="wiring" class="wiring">
-          <svg viewBox="0 0 420 170" class="wiring-svg" aria-label="Sensor wiring: one leg to A0, the other to GND">
+          <svg viewBox="0 0 420 170" class="wiring-svg" aria-label="FX29 load cell wired to the R4 WiFi's Qwiic port">
             <rect x="10" y="20" width="130" height="130" rx="10" class="w-board" />
-            <text x="75" y="44" class="w-label">Arduino Uno</text>
-            <rect x="30" y="64" width="90" height="28" rx="5" class="w-pin" />
-            <text x="75" y="83" class="w-pin-text">A0</text>
-            <rect x="30" y="104" width="90" height="28" rx="5" class="w-pin" />
-            <text x="75" y="123" class="w-pin-text">GND</text>
-            <path d="M120 78 C 200 78, 220 84, 280 84" class="w-wire" />
-            <path d="M120 118 C 200 118, 220 96, 280 96" class="w-wire" />
-            <rect x="280" y="80" width="54" height="20" rx="3" class="w-tail" />
-            <circle cx="366" cy="90" r="40" class="w-sensor" />
-            <circle cx="366" cy="90" r="27" class="w-sensor-inner" />
+            <text x="75" y="44" class="w-label">Uno R4 WiFi</text>
+            <rect x="40" y="70" width="70" height="56" rx="5" class="w-pin" />
+            <text x="75" y="103" class="w-pin-text">Qwiic</text>
+            <path d="M110 80 C 200 80, 220 78, 300 78" class="w-wire w-red" />
+            <path d="M110 92 C 200 92, 220 86, 300 86" class="w-wire w-black" />
+            <path d="M110 104 C 200 104, 220 94, 300 94" class="w-wire w-blue" />
+            <path d="M110 116 C 200 116, 220 102, 300 102" class="w-wire w-yellow" />
+            <circle cx="350" cy="90" r="44" class="w-sensor" />
+            <circle cx="350" cy="90" r="28" class="w-sensor-inner" />
+            <circle cx="350" cy="90" r="9" class="w-sensor" />
           </svg>
           <ol class="steps">
-            <li>Connect a sensor:
-              <ul>
-                <li><b>FX29 load cell:</b> to the R4 WiFi's <b>Qwiic</b> port. Sensor wire → Qwiic wire: red → red, black → black, white → blue, yellow → yellow.</li>
-                <li><b>Film sensor:</b> its two legs to <b>A0</b> and <b>GND</b> (either way round, no resistor).</li>
-              </ul>
-            </li>
+            <li>Connect the FX29 load cell to the R4 WiFi's <b>Qwiic</b> port. Sensor wire → Qwiic wire: red → red, black → black, white → blue, yellow → yellow.</li>
             <li>Plug the Uno (R3 or R4 WiFi) into this computer with its USB cable.</li>
             <li>Dynamis installs its firmware on the Uno (about 10&nbsp;s). <b>This replaces the program on the board.</b> Afterwards, upload your own program again from the Arduino IDE.</li>
           </ol>
@@ -74,13 +69,10 @@
           </div>
         </div>
         <div class="readout">
-          <span id="force-approx" class="approx hidden">≈</span>
           <span id="force-value" class="value">—</span>
           <span id="force-unit" class="unit"></span>
         </div>
-        <div id="calib-warning" class="warning">
-          Estimated from a typical sensor and could be off by half. Calibrate below for real numbers.
-        </div>
+        <div id="sensor-warning" class="warning hidden"></div>
 
         <div class="stats">
           <div class="stat">
@@ -92,7 +84,7 @@
             <span><span id="avg-value" class="stat-value">—</span> <span id="avg-unit" class="muted"></span></span>
           </div>
           <div class="stat">
-            <span id="raw-label" class="label">Sensor reading</span>
+            <span class="label">Raw counts</span>
             <span id="raw-value" class="stat-value">—</span>
           </div>
           <div class="stat">
@@ -103,7 +95,7 @@
 
         <div class="actions">
           <button id="peak-reset-btn">Reset peak</button>
-          <button id="zero-btn" title="Subtract the current reading (e.g. the disc's weight)">Zero</button>
+          <button id="zero-btn" title="Take the current reading as zero force (remembered)">Zero</button>
           <button id="unzero-btn" class="ghost">Clear zero</button>
         </div>
       </section>
@@ -118,7 +110,7 @@
 
       <section class="card calib-card">
         <div class="card-head"><span class="label">Calibration</span></div>
-        <div id="calib-fx29" class="hidden">
+        <div>
           <p class="help">
             The FX29 is factory-calibrated. Press <b>Zero</b> once with nothing on its button;
             that's remembered. Press on the center of the button, straight down.
@@ -144,25 +136,6 @@
           </div>
           <p class="help">Correction: <span id="fx29-span"></span>
             <button id="fx29-span-reset" class="ghost small">Reset</button></p>
-        </div>
-        <div id="calib-fsr">
-        <p class="help">
-          Put a small rigid disc (a coin) on the sensor's round area and a known weight on the
-          disc. Wait ~2&nbsp;s, type the weight and capture. Use 3–5 weights across your range
-          (e.g. 100&nbsp;g, 500&nbsp;g, 1&nbsp;kg, 2&nbsp;kg). Use the same disc when measuring.
-        </p>
-        <div class="calib-add">
-          <input id="calib-weight" type="number" min="1" step="any" placeholder="Known weight" />
-          <span class="muted">g</span>
-          <button id="calib-add-btn" class="primary">Capture point</button>
-        </div>
-        <table class="calib-table">
-          <thead><tr><th>Weight (g)</th><th>Reading</th><th></th></tr></thead>
-          <tbody id="calib-body"></tbody>
-        </table>
-        <div class="actions">
-          <button id="calib-clear-btn" class="ghost">Clear all points</button>
-        </div>
         </div>
       </section>
 
